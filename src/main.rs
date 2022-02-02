@@ -22,14 +22,21 @@ enum CmdType {
     Show,
 }
 
-/// It'll have different types of commands such as scan, clone, show
+/// pplaces helps you manage local git repositories
 #[derive(Parser, Debug)]
 #[clap(author, version, about)]
 struct CliArgs {
     #[clap(subcommand)]
     cmd_type: CmdType,
-    #[clap(short, long, default_value_t = 7u32)]
+
+
+    /// Only show repos with a commit in the last N days
+    #[clap(short, long, default_value_t = 30u32)]
     days_to_show: u32,
+
+    /// Show full debug data
+    #[clap(short, long)]
+    full: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -49,7 +56,7 @@ fn scan(path: &Path, cache: &mut Cache) {
         let e = e.unwrap();
         if e.path().is_dir() {
             if e.path().ends_with(".git") {
-                process_repo(&path, cache);
+                update_repo_data(&path, cache);
             } else {
                 scan(&e.path(), cache);
             }
@@ -58,15 +65,26 @@ fn scan(path: &Path, cache: &mut Cache) {
 }
 
 fn clone(args: &Vec<String>, data: &Cache) {
-    println!("{args:#?}");
-
     let url = args
         .iter()
-        .find(|s| s.starts_with("http") || s.starts_with("git@"));
-    println!("{url:?}");
+        .find(|s| s.starts_with("http") || s.starts_with("git@"))
+        .expect("No url given");
+
+    let user_and_repo_name = get_url_ending(url);
+
+    let prev = data.iter().find(|e| {
+        e.upstream
+            .iter()
+            .any(|url| get_url_ending(url) == user_and_repo_name)
+    });
+
+    match prev {
+        Some(entry) => println!("{} already exists in {}", url, entry.path),
+        None => {}
+    }
 }
 
-fn process_repo(path: &Path, cache: &mut Cache) {
+fn update_repo_data(path: &Path, cache: &mut Cache) {
     // We assume that there won't be repetition, so a Vec is just fine.
     let data = fetch_metadata(path).unwrap();
     cache.push(data);
@@ -203,10 +221,31 @@ fn print_recent(data: &Cache, since: Duration) {
     }
 }
 
+fn get_url_ending(url: &str) -> String {
+    let url = url.split(" ").take(1).collect::<String>();
+
+    if url.starts_with("git@") {
+        // SSH repo
+        let url = url.split_once(":").unwrap().1;
+        let url = url.split_once(".").unwrap().0;
+        url.into()
+    } else if url.starts_with("http") {
+        // non-ssh repo
+        let url = url.split("/").skip(3).collect::<Vec<_>>();
+        let url = url.join("/");
+        url
+    } else {
+        panic!("{} is not a URL", url);
+    }
+}
+
 // https://stackoverflow.com/questions/2423777/is-it-possible-to-create-a-remote-repo-on-github-from-the-cli-without-opening-br
 
 fn main() {
     let args = CliArgs::parse();
+
+    let days_to_show = Duration::days(args.days_to_show as i64);
+    let full_info = args.full;
 
     match args.cmd_type {
         CmdType::Scan { ref path } => {
@@ -217,7 +256,7 @@ fn main() {
             // This might be slow in some machines
             let data = build_cache(path);
             save_cache_to_disk(&data);
-            print_recent(&data, Duration::days(args.days_to_show as i64));
+            print_recent(&data, days_to_show);
         }
         CmdType::Clone { ref args } => {
             let data = get_cache_from_disk().unwrap();
@@ -225,10 +264,27 @@ fn main() {
         }
         CmdType::Show => {
             let data = get_cache_from_disk().unwrap();
-            print_recent(&data, Duration::days(args.days_to_show as i64));
-            println!("{data:#?}");
+            if full_info {
+                println!("{data:#?}")
+            } else {
+                print_recent(&data, days_to_show);
+            }
         }
     }
 
     //println!("{args:?}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_url_parser() {
+        let a = "https://github.com/linebender/runebender (fetch)";
+        let b = "git@github.com:gbrls/Bootloader.git (fetch)";
+
+        assert_eq!(get_url_ending(a), "linebender/runebender");
+        assert_eq!(get_url_ending(b), "gbrls/Bootloader");
+    }
 }

@@ -3,13 +3,14 @@
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
-    io::BufRead,
     path::{Path, PathBuf},
     process::Command,
 };
 
 use chrono::{DateTime, Duration, Local, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use clap::Parser;
+
+use anyhow::{Context, Result};
 
 type Cache = Vec<ProjectMetadata>;
 
@@ -33,8 +34,8 @@ struct CliArgs {
     cmd_type: CmdType,
 
     /// Only show repos with a commit in the last N days
-    #[clap(short, long, default_value_t = 30u32)]
-    days_to_show: u32,
+    #[clap(short, long)]
+    days_to_show: Option<u32>,
 
     /// Show full debug data
     #[clap(short, long)]
@@ -99,6 +100,12 @@ fn clone(args: &Vec<String>, data: &Cache) {
 fn update_repo_data(path: &Path, cache: &mut Cache) {
     // We assume that there won't be repetition, so a Vec is just fine.
     let data = fetch_metadata(path).unwrap();
+    let idx = cache.iter().enumerate().find(|(_, e)| e.path == data.path);
+
+    if let Some((i, _)) = idx {
+        cache.swap_remove(i);
+    }
+
     cache.push(data);
 }
 
@@ -170,7 +177,11 @@ fn fetch_metadata(path: &Path) -> Option<ProjectMetadata> {
 }
 
 fn build_cache(path: &Path) -> Cache {
-    let mut data: Cache = Vec::new();
+    let mut data = match get_cache_from_disk() {
+        Ok(cache) => cache,
+        Err(_) => Vec::new(),
+    };
+
     scan(path, &mut data);
     data.sort_by_key(|d| d.latest_commit);
     data.reverse();
@@ -199,8 +210,9 @@ fn save_cache_to_disk(cache: &Cache) {
     // We don't have an else because it should work even without a disk cache.
 }
 
-fn get_cache_from_disk() -> Result<Cache, Box<dyn std::error::Error>> {
-    let data_str = fs::read_to_string(config_dir().unwrap().join(".cache.json"))?;
+fn get_cache_from_disk() -> Result<Cache> {
+    let data_str = fs::read_to_string(config_dir().unwrap().join(".cache.json"))
+        .context("Cache file not found")?;
     let data = serde_json::from_str::<Cache>(&data_str)?;
 
     Ok(data)
@@ -212,7 +224,7 @@ fn print_paths(data: &Cache) {
     }
 }
 
-fn print_recent(data: &Cache, since: Duration) {
+fn print_recent(data: &Cache, since: Duration, location: &Path) {
     for entry in data.iter().filter(|e| {
         if e.latest_commit.is_some() {
             if let Some(date_time) = e.latest_commit {
@@ -221,7 +233,8 @@ fn print_recent(data: &Cache, since: Duration) {
                     .unwrap();
                 let elapsed = Local::now() - date_time;
 
-                elapsed <= since
+                let loc_str = location.to_str().unwrap();
+                elapsed <= since && e.path.starts_with(loc_str)
             } else {
                 false
             }
@@ -256,7 +269,7 @@ fn get_url_ending(url: &str) -> String {
     }
 }
 
-fn upload_repo(path: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn upload_repo(path: &str) -> Result<()> {
     //curl -H "Authorization: token $(cat .github-personal-token)" --data '{"name":"teste-api-00"}' https://api.github.com/user/repos
 
     let auth_token = include_str!("../../.github-personal-token");
@@ -291,12 +304,15 @@ fn upload_repo(path: &str) -> Result<(), Box<dyn std::error::Error>> {
 
 // Issues:
 // - When cloning we don't update the cache.
-// - When scaning again the cache is deleted and then populated.
 
-fn main() {
+fn main() -> Result<()> {
     let args = CliArgs::parse();
 
-    let days_to_show = Duration::days(args.days_to_show as i64);
+    let days = match args.days_to_show {
+        Some(n) => n,
+        None => 365 * 1_000,
+    };
+    let days_to_show = Duration::days(days as i64);
     let full_info = args.full;
 
     match args.cmd_type {
@@ -308,18 +324,18 @@ fn main() {
             // This might be slow in some machines
             let data = build_cache(path);
             save_cache_to_disk(&data);
-            print_recent(&data, days_to_show);
+            print_recent(&data, days_to_show, path);
         }
         CmdType::Clone { ref args } => {
-            let data = get_cache_from_disk().unwrap();
+            let data = get_cache_from_disk()?;
             clone(args, &data);
         }
         CmdType::Show => {
-            let data = get_cache_from_disk().unwrap();
+            let data = get_cache_from_disk()?;
             if full_info {
                 println!("{data:#?}")
             } else {
-                print_recent(&data, days_to_show);
+                print_recent(&data, days_to_show, Path::new("/"));
             }
         }
 
@@ -331,11 +347,11 @@ fn main() {
                 .unwrap()
                 .any(|e| e.unwrap().path().ends_with(".git"));
 
-            upload_repo(path).unwrap();
+            upload_repo(path)?;
         }
     }
 
-    //println!("{args:?}");
+    Ok(())
 }
 
 #[cfg(test)]

@@ -1,8 +1,9 @@
-#![feature(type_alias_impl_trait)]
+#![feature(type_alias_impl_trait, exit_status_error)]
 
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
+    io::BufRead,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -20,6 +21,8 @@ enum CmdType {
     Clone { args: Vec<String> },
     /// Show all git repos with some metadata
     Show,
+    /// Upload repo to github
+    Upload,
 }
 
 /// pplaces helps you manage local git repositories
@@ -28,7 +31,6 @@ enum CmdType {
 struct CliArgs {
     #[clap(subcommand)]
     cmd_type: CmdType,
-
 
     /// Only show repos with a commit in the last N days
     #[clap(short, long, default_value_t = 30u32)]
@@ -72,15 +74,25 @@ fn clone(args: &Vec<String>, data: &Cache) {
 
     let user_and_repo_name = get_url_ending(url);
 
-    let prev = data.iter().find(|e| {
+    let repo_matches = data.iter().find(|e| {
         e.upstream
             .iter()
             .any(|url| get_url_ending(url) == user_and_repo_name)
     });
 
-    match prev {
-        Some(entry) => println!("{} already exists in {}", url, entry.path),
-        None => {}
+    match repo_matches {
+        Some(entry) => println!("{} already exists in\n{}", url, entry.path),
+        //TODO: call git clone with the args
+        None => {
+            let output = Command::new("git")
+                .arg("clone")
+                .args(args)
+                .output()
+                .expect("Failed to run command");
+
+            let stderr = String::from_utf8(output.stderr).unwrap();
+            print!("{stderr}");
+        }
     }
 }
 
@@ -223,11 +235,16 @@ fn print_recent(data: &Cache, since: Duration) {
 
 fn get_url_ending(url: &str) -> String {
     let url = url.split(" ").take(1).collect::<String>();
+    let url = if url.ends_with(".git") {
+        url.split_once(".git").unwrap().0
+    } else {
+        &url
+    };
 
     if url.starts_with("git@") {
         // SSH repo
+        // git@github.com:gbrls/gdb -FunEnd.git
         let url = url.split_once(":").unwrap().1;
-        let url = url.split_once(".").unwrap().0;
         url.into()
     } else if url.starts_with("http") {
         // non-ssh repo
@@ -239,7 +256,42 @@ fn get_url_ending(url: &str) -> String {
     }
 }
 
+fn upload_repo(path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    //curl -H "Authorization: token $(cat .github-personal-token)" --data '{"name":"teste-api-00"}' https://api.github.com/user/repos
+
+    let auth_token = include_str!("../../.github-personal-token");
+    let auth_str = format!("\"Authorization: token {}\"", auth_token);
+    let req_json = format!("\'{{\"name\": \"{}\"}}\'", "teste-api-01");
+    let args = &[
+        "-H",
+        //"\"Authorization: token $(cat .github-personal-token)\"",
+        &auth_str,
+        "--data",
+        &req_json,
+        "https://api.github.com/user/repos",
+    ];
+
+    dbg!(args);
+
+    let output = Command::new("curl")
+        .args(args)
+        .status()
+        .expect("Failed to exec")
+        .exit_ok()
+        .expect("Command failed");
+
+    dbg!(output);
+
+    //git remote add origin git@github.com:USER/REPO.git
+    //git push origin main
+    Ok(())
+}
+
 // https://stackoverflow.com/questions/2423777/is-it-possible-to-create-a-remote-repo-on-github-from-the-cli-without-opening-br
+
+// Issues:
+// - When cloning we don't update the cache.
+// - When scaning again the cache is deleted and then populated.
 
 fn main() {
     let args = CliArgs::parse();
@@ -269,6 +321,17 @@ fn main() {
             } else {
                 print_recent(&data, days_to_show);
             }
+        }
+
+        CmdType::Upload => {
+            //let path = working_directory();
+            let path = ".";
+
+            let is_repo = fs::read_dir(path)
+                .unwrap()
+                .any(|e| e.unwrap().path().ends_with(".git"));
+
+            upload_repo(path).unwrap();
         }
     }
 

@@ -83,7 +83,6 @@ fn clone(args: &Vec<String>, data: &Cache) {
 
     match repo_matches {
         Some(entry) => println!("{} already exists in\n{}", url, entry.path),
-        //TODO: call git clone with the args
         None => {
             let output = Command::new("git")
                 .arg("clone")
@@ -97,9 +96,11 @@ fn clone(args: &Vec<String>, data: &Cache) {
     }
 }
 
+/// This is O(n)
 fn update_repo_data(path: &Path, cache: &mut Cache) {
     // We assume that there won't be repetition, so a Vec is just fine.
     let data = fetch_metadata(path).unwrap();
+
     let idx = cache.iter().enumerate().find(|(_, e)| e.path == data.path);
 
     if let Some((i, _)) = idx {
@@ -224,7 +225,7 @@ fn print_paths(data: &Cache) {
     }
 }
 
-fn print_recent(data: &Cache, since: Duration, location: &Path) {
+fn print_recent(data: &Cache, since: Option<Duration>, location: &Path) {
     for entry in data.iter().filter(|e| {
         if e.latest_commit.is_some() {
             if let Some(date_time) = e.latest_commit {
@@ -234,7 +235,7 @@ fn print_recent(data: &Cache, since: Duration, location: &Path) {
                 let elapsed = Local::now() - date_time;
 
                 let loc_str = location.to_str().unwrap();
-                elapsed <= since && e.path.starts_with(loc_str)
+                since.is_none() || (elapsed <= since.unwrap() && e.path.starts_with(loc_str))
             } else {
                 false
             }
@@ -271,6 +272,8 @@ fn get_url_ending(url: &str) -> String {
 
 fn upload_repo(path: &str) -> Result<()> {
     //curl -H "Authorization: token $(cat .github-personal-token)" --data '{"name":"teste-api-00"}' https://api.github.com/user/repos
+
+    //TODO: Use a Rust http client
 
     let auth_token = include_str!("../../.github-personal-token");
     let auth_str = format!("\"Authorization: token {}\"", auth_token);
@@ -312,7 +315,8 @@ fn main() -> Result<()> {
         Some(n) => n,
         None => 365 * 1_000,
     };
-    let days_to_show = Duration::days(days as i64);
+    //let days_to_show = Duration::days(days as i64);
+    let days_to_show = None;
     let full_info = args.full;
 
     match args.cmd_type {
@@ -343,9 +347,7 @@ fn main() -> Result<()> {
             //let path = working_directory();
             let path = ".";
 
-            let is_repo = fs::read_dir(path)
-                .unwrap()
-                .any(|e| e.unwrap().path().ends_with(".git"));
+            let is_repo = fs::read_dir(path)?.any(|e| e.unwrap().path().ends_with(".git"));
 
             upload_repo(path)?;
         }

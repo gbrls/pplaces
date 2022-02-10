@@ -1,16 +1,18 @@
 #![feature(type_alias_impl_trait, exit_status_error)]
 
+use anyhow::{Context, Result};
+use chrono::{DateTime, Duration, Local, NaiveDate, NaiveDateTime, TimeZone, Utc};
+use clap::Parser;
+use hyper::Body;
+use hyper::{Client, Method, Request};
+use hyper_tls::HttpsConnector;
 use serde::{Deserialize, Serialize};
+use std::io::{stdout, Read, Write};
 use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
 };
-
-use chrono::{DateTime, Duration, Local, NaiveDate, NaiveDateTime, TimeZone, Utc};
-use clap::Parser;
-
-use anyhow::{Context, Result};
 
 type Cache = Vec<ProjectMetadata>;
 
@@ -270,45 +272,48 @@ fn get_url_ending(url: &str) -> String {
     }
 }
 
-fn upload_repo(path: &str) -> Result<()> {
+async fn upload_repo(path: &str) -> Result<()> {
     //curl -H "Authorization: token $(cat .github-personal-token)" --data '{"name":"teste-api-00"}' https://api.github.com/user/repos
-
-    //TODO: Use a Rust http client
-
-    let auth_token = include_str!("../../.github-personal-token");
-    let auth_str = format!("\"Authorization: token {}\"", auth_token);
-    let req_json = format!("\'{{\"name\": \"{}\"}}\'", "teste-api-01");
-    let args = &[
-        "-H",
-        //"\"Authorization: token $(cat .github-personal-token)\"",
-        &auth_str,
-        "--data",
-        &req_json,
-        "https://api.github.com/user/repos",
-    ];
-
-    dbg!(args);
-
-    let output = Command::new("curl")
-        .args(args)
-        .status()
-        .expect("Failed to exec")
-        .exit_ok()
-        .expect("Command failed");
-
-    dbg!(output);
 
     //git remote add origin git@github.com:USER/REPO.git
     //git push origin main
+
+    let token = include_str!("../../.github-personal-token").trim_end();
+    let data = r#"'{"name":"teste-api-01"}'"#;
+
+    dbg!(data, token);
+
+    let https = HttpsConnector::new();
+    let client = Client::builder().build::<_, hyper::Body>(https);
+
+    let req = Request::builder()
+        .method(Method::POST)
+        //.uri("https://httpbin.org/post")
+        .uri("https://api.github.com/user/repos")
+        .header("content-type", "application/json")
+        .header("User-Agent", "pplaces CLI Tool")
+        .header("Authorization", format!("token {}", token))
+        .body(Body::from(r#"{"name":"teste-api-01"}"#))?;
+
+    let res = client.request(req).await?;
+
+    println!("{:#?}", &res);
+
+    let body = hyper::body::to_bytes(res.into_body()).await?;
+    let body = String::from_utf8(body.to_vec())?;
+
+    println!("Response Body {body}");
+
+    println!("Uploaded?");
+
     Ok(())
 }
 
 // https://stackoverflow.com/questions/2423777/is-it-possible-to-create-a-remote-repo-on-github-from-the-cli-without-opening-br
 
 // Issues:
-// - When cloning we don't update the cache.
-
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let args = CliArgs::parse();
 
     let days = match args.days_to_show {
@@ -347,9 +352,7 @@ fn main() -> Result<()> {
             //let path = working_directory();
             let path = ".";
 
-            let is_repo = fs::read_dir(path)?.any(|e| e.unwrap().path().ends_with(".git"));
-
-            upload_repo(path)?;
+            upload_repo(path).await?;
         }
     }
 

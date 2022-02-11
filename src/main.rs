@@ -7,6 +7,8 @@ use hyper::Body;
 use hyper::{Client, Method, Request};
 use hyper_tls::HttpsConnector;
 use serde::{Deserialize, Serialize};
+use serde_json::from_str;
+use std::env;
 use std::io::{stdout, Read, Write};
 use std::{
     fs,
@@ -272,16 +274,19 @@ fn get_url_ending(url: &str) -> String {
     }
 }
 
-async fn upload_repo(path: &str) -> Result<()> {
+async fn upload_repo(path: &Path) -> Result<()> {
+    let repo_name = path.iter().last().unwrap();
+    dbg!(repo_name);
+
     //curl -H "Authorization: token $(cat .github-personal-token)" --data '{"name":"teste-api-00"}' https://api.github.com/user/repos
 
     //git remote add origin git@github.com:USER/REPO.git
     //git push origin main
 
     let token = include_str!("../../.github-personal-token").trim_end();
-    let data = r#"'{"name":"teste-api-01"}'"#;
+    let data = format!("{{\"name\":\"{}\"}}", repo_name.to_str().unwrap());
 
-    dbg!(data, token);
+    dbg!(&data, token);
 
     let https = HttpsConnector::new();
     let client = Client::builder().build::<_, hyper::Body>(https);
@@ -293,7 +298,8 @@ async fn upload_repo(path: &str) -> Result<()> {
         .header("content-type", "application/json")
         .header("User-Agent", "pplaces CLI Tool")
         .header("Authorization", format!("token {}", token))
-        .body(Body::from(r#"{"name":"teste-api-01"}"#))?;
+        .body(Body::from(data))?;
+    //.body(Body::from(r#"{"name":"teste-api-01"}"#))?;
 
     let res = client.request(req).await?;
 
@@ -301,6 +307,36 @@ async fn upload_repo(path: &str) -> Result<()> {
 
     let body = hyper::body::to_bytes(res.into_body()).await?;
     let body = String::from_utf8(body.to_vec())?;
+
+    #[derive(serde::Deserialize, Debug)]
+    struct Values {
+        clone_url: String,
+        ssh_url: String,
+    }
+
+    let val = from_str::<Values>(&body)?;
+
+    //git remote add origin https://github.com/gbrls/pplaces.git
+    //git branch -M main
+    //git push -u origin main
+
+    let output = Command::new("git")
+        .args(&["remote", "add", "origin", &val.ssh_url])
+        .output()
+        .expect("Failed to run command");
+
+    let output = Command::new("git")
+        .args(&["branch", "-M", "main"])
+        .output()
+        .expect("Failed to run command");
+
+    let output = Command::new("git")
+        .args(&["push", "-u", "origin", "main"])
+        .output()
+        .expect("Failed to run command");
+    //println!("{}", output.stdout);
+
+    dbg!(val);
 
     println!("Response Body {body}");
 
@@ -350,9 +386,8 @@ async fn main() -> Result<()> {
 
         CmdType::Upload => {
             //let path = working_directory();
-            let path = ".";
 
-            upload_repo(path).await?;
+            upload_repo(&env::current_dir().unwrap()).await?;
         }
     }
 
